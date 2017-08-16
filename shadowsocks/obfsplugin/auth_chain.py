@@ -31,6 +31,7 @@ import struct
 import zlib
 import hmac
 import hashlib
+import bisect
 
 import shadowsocks
 from shadowsocks import common, lru_cache, encrypt
@@ -40,9 +41,12 @@ from shadowsocks.common import to_bytes, to_str, ord, chr
 def create_auth_chain_a(method):
     return auth_chain_a(method)
 
+def create_auth_chain_b(method):
+    return auth_chain_b(method)
 
 obfs_map = {
         'auth_chain_a': (create_auth_chain_a,),
+        'auth_chain_b': (create_auth_chain_b,),
 }
 
 class xorshift128plus(object):
@@ -629,4 +633,60 @@ class auth_chain_a(auth_base):
 
     def dispose(self):
         self.server_info.data.remove(self.user_id, self.client_id)
+
+class auth_chain_b(auth_chain_a):
+    def __init__(self, method):
+        super(auth_chain_b, self).__init__(method)
+        self.salt = b"auth_chain_b"
+        self.no_compatible_method = 'auth_chain_b'
+        self.data_size_list = []
+        self.data_size_list2 = []
+
+    def init_data_size(self, key):
+        if self.data_size_list:
+            self.data_size_list = []
+            self.data_size_list2 = []
+        random = xorshift128plus()
+        random.init_from_bin(key)
+        list_len = random.next() % 8 + 4
+        for i in range(0, list_len):
+            self.data_size_list.append((int)(random.next() % 2340 % 2040 % 1440))
+        self.data_size_list.sort()
+        list_len = random.next() % 16 + 8
+        for i in range(0, list_len):
+            self.data_size_list2.append((int)(random.next() % 2340 % 2040 % 1440))
+        self.data_size_list2.sort()
+
+    def set_server_info(self, server_info):
+        self.server_info = server_info
+        try:
+            max_client = int(server_info.protocol_param.split('#')[0])
+        except:
+            max_client = 64
+        self.server_info.data.set_max_client(max_client)
+        self.init_data_size(self.server_info.key)
+
+    def rnd_data_len(self, buf_size, last_hash, random):
+        if buf_size >= 1440:
+            return 0
+        random.init_from_bin_len(last_hash, buf_size)
+        pos = bisect.bisect_left(self.data_size_list, buf_size + self.server_info.overhead)
+        final_pos = pos + random.next() % (len(self.data_size_list))
+        if final_pos < len(self.data_size_list):
+            return self.data_size_list[final_pos] - buf_size - self.server_info.overhead
+
+        pos = bisect.bisect_left(self.data_size_list2, buf_size + self.server_info.overhead)
+        final_pos = pos + random.next() % (len(self.data_size_list2))
+        if final_pos < len(self.data_size_list2):
+            return self.data_size_list2[final_pos] - buf_size - self.server_info.overhead
+        if final_pos < pos + len(self.data_size_list2) - 1:
+            return 0
+
+        if buf_size > 1300:
+            return random.next() % 31
+        if buf_size > 900:
+            return random.next() % 127
+        if buf_size > 400:
+            return random.next() % 521
+        return random.next() % 1021
 

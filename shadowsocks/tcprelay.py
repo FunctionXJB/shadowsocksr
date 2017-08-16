@@ -816,15 +816,15 @@ class TCPRelayHandler(object):
         if self._overhead == 0:
             return recv_buffer_size
         buffer_size = len(sock.recv(recv_buffer_size, socket.MSG_PEEK))
+        frame_size = self._tcp_mss - self._overhead
         if up:
             buffer_size = min(buffer_size, self._recv_u_max_size)
-            self._recv_u_max_size = min(self._recv_u_max_size + self._tcp_mss - self._overhead, BUF_SIZE)
+            self._recv_u_max_size = min(self._recv_u_max_size + frame_size, BUF_SIZE)
         else:
             buffer_size = min(buffer_size, self._recv_d_max_size)
-            self._recv_d_max_size = min(self._recv_d_max_size + self._tcp_mss - self._overhead, BUF_SIZE)
+            self._recv_d_max_size = min(self._recv_d_max_size + frame_size, BUF_SIZE)
         if buffer_size == recv_buffer_size:
             return buffer_size
-        frame_size = self._tcp_mss - self._overhead
         if buffer_size > frame_size:
             buffer_size = int(buffer_size / frame_size) * frame_size
         return buffer_size
@@ -858,6 +858,10 @@ class TCPRelayHandler(object):
                 if self._encrypt_correct:
                     try:
                         obfs_decode = self._obfs.server_decode(data)
+                        if self._stage == STAGE_INIT:
+                            self._overhead = self._obfs.get_overhead(self._is_local) + self._protocol.get_overhead(self._is_local)
+                            server_info = self._protocol.get_server_info()
+                            server_info.overhead = self._overhead
                     except Exception as e:
                         shell.print_exception(e)
                         logging.error("exception from %s:%d" % (self._client_address[0], self._client_address[1]))
